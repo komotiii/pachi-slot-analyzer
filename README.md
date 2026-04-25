@@ -1,13 +1,14 @@
 # pachi-slot-analyzer
 
-特定サイトから台データを取得し、CSVとして保存するツールです。
+特定サイトの台ページを自動探索し、当日データをCSV保存するPythonツールです。
 
 ## できること
 
-- 店舗ページから対象機種ページを自動探索
-- 各台ページを並列取得
-- BB/RB/ART や回転数をCSV出力
-- 探索結果URLをキャッシュして、2回目以降を高速化
+- `news.php -> data.php -> machine.php` の順で対象URLを自動探索
+- 各台ページを並列スクレイピング
+- 一時的に `0番台` が表示されるページを待機してから取得
+- 取得失敗時はドライバを作り直してリトライ
+- BB/RB/ART、回転数、合算確率などをCSV出力
 
 ## セットアップ
 
@@ -23,7 +24,7 @@ pip install -r requirements.txt
 copy config.example.json config.json
 ```
 
-3. 必要に応じて `config.json` を編集
+3. `config.json` を必要に応じて編集
 
 4. 実行
 
@@ -35,68 +36,71 @@ python main.py
 
 - `config.json` はローカル運用（`.gitignore` 対象）
 - テンプレートは `config.example.json`
+- 相対パスは `main.py` のあるディレクトリ基準で解決
 
 ### 設定例
 
 ```json
 {
-  "save_dir": "./data",
-  "max_workers": 2,
-  "discovery": {
-    "strategy": "news_to_data_to_machine",
-    "news_urls": [
-      "https://reitoweb.com/b_moba/doc/news.php?h=4"
-    ],
-    "data_include_pattern": "/data\\.php\\?",
-    "machine_include_pattern": "/machine\\.php\\?",
-    "allowed_t_values": ["37"],
-    "allowed_m_values": ["99120010"],
-    "show_data_url_every": 5,
-    "max_data_pages": 800,
-    "same_host_only": true,
-    "cache_targets_path": "./targets.discovered.json",
-    "use_cached_targets_if_exists": true
-  }
+   "save_dir": "./data",
+   "max_workers": 4,
+   "discovery": {
+      "strategy": "news_to_data_to_machine",
+      "news_urls": [
+         "https://reitoweb.com/b_moba/doc/news.php"
+      ],
+      "data_include_pattern": "/data\\.php\\?",
+      "machine_include_pattern": "/machine\\.php\\?",
+      "allowed_h_values": ["4", "11"],
+      "allowed_t_values": ["37", "31", "28"],
+      "allowed_m_values": [],
+      "show_data_url_every": 10,
+      "max_data_pages": 800,
+      "same_host_only": true
+   }
 }
 ```
 
-## main.py の処理内容
+### 実際に使用される主なキー
 
-`main.py` の全体フローは次の順です。
+- `save_dir`: CSV保存先
+- `max_workers`: 台ページ取得の並列数
+- `discovery.news_urls`: 探索開始URL（必須）
+- `discovery.data_include_pattern`: `data.php` 抽出用正規表現
+- `discovery.machine_include_pattern`: `machine.php` 抽出用正規表現
+- `discovery.allowed_h_values`: `news_urls` に `h=` がない場合の展開候補
+- `discovery.allowed_t_values`: `data.php` の `t=` フィルタ
+- `discovery.allowed_m_values`: `data.php` の `m=` フィルタ
+- `discovery.max_data_pages`: 走査する `data.php` の上限
+- `discovery.max_workers`: `data.php` 走査時の並列数（未指定時は10）
 
-1. `load_config()`
-   - `config.json` を読み込み（コメント付きJSONにも対応）
-2. ターゲットURLの決定
-   - `discovery` がある場合はニュースページから `machine.php` を探索
-   - `use_cached_targets_if_exists` が有効ならキャッシュを優先利用
-3. `fetch_all_parallel()`
-   - `ThreadPoolExecutor` で台URLを並列取得
-4. `fetch_url()`
-   - 一時的な `0番台` / 空データ対策としてリトライ
-5. CSV保存
-   - 取得済みデータを `data/pachinko_YYYYmmdd_HHMMSS.csv` に保存
+## 処理フロー
 
-## 探索方式
+1. 設定を読み込み、保存先ディレクトリを作成
+2. ニュースページから `data.php` を収集し、さらに `machine.php` を収集
+3. `machine.php` を並列取得
+4. 各ページで `document.readyState == complete` を待機
+5. `div.machineName h2` が `0番台` 以外になるまで待機してから解析
+6. 失敗時は最大3回までリトライ（スレッド内ドライバをリセット）
+7. 結果を台番号順でソートし、CSV保存
 
-`strategy = news_to_data_to_machine` のときは次の順にたどります。
+## 出力CSV
 
-1. `news.php?h=...` を読む
-2. リンクから `data.php` を抽出
-3. 各 `data.php` から `machine.php` を抽出
+ファイル名: `pachinko_YYYYmmdd_HHMMSS.csv`
 
-フィルタで探索範囲を絞れます。
+列:
 
-- `allowed_t_values`: `data.php` の `t=` を絞る
-- `allowed_m_values`: `data.php` の `m=` を絞る
-
-## 2回目以降の速度
-
-`cache_targets_path` に探索結果を保存し、次回はそのJSONを使って探索をスキップできます。
-
-- 高速化される部分: URL探索（news/data）
-- 毎回必要な部分: 各台ページの実データ取得
+- `h` (ホール名)
+- `n` (番台)
+- `machine` (機種)
+- `tG` (累計スタート)
+- `cG` (現在スタート)
+- `bb`, `rb`, `art` (数)
+- `bbp`, `rbp`, `artp`, `brp` (確率)
+- `max` (最大持玉)
 
 ## 補足
 
-- SeleniumとChromeDriverが必要です
-- 出力CSVやローカル設定はGit管理対象から除外しています
+- SeleniumとChromeDriverが必要
+- Chromeはヘッドレスモードで起動
+- サイト側のHTML構造が変わると、セレクタ調整が必要
