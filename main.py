@@ -301,22 +301,41 @@ def discover_machine_urls_from_news(discovery):
     machine_urls = set()
     data_list = list(sorted(data_urls))[:max_data_pages]
     print(f"[Discovery] data pages to scan: {len(data_list)}", flush=True)
-    for index, data_url in enumerate(data_list, start=1):
-        if index == 1 or index % show_data_url_every == 0 or index == len(data_list):
-            print(f"[Discovery] ({index}/{len(data_list)}) Scan data page: {data_url}", flush=True)
+
+    def scan_data_page(data_url):
+        found_urls = set()
         data_host = urlparse(data_url).netloc
         try:
             html = fetch_html(data_url)
             links = extract_links(html, data_url)
+            for link in links:
+                parsed = urlparse(link)
+                if same_host_only and parsed.netloc != data_host:
+                    continue
+                if machine_pattern.search(link):
+                    found_urls.add(link)
         except Exception:
-            continue
+            pass
+        return found_urls
 
-        for link in links:
-            parsed = urlparse(link)
-            if same_host_only and parsed.netloc != data_host:
-                continue
-            if machine_pattern.search(link):
-                machine_urls.add(link)
+    discovery_workers = int(discovery.get('max_workers', 10))
+
+    with ThreadPoolExecutor(max_workers=discovery_workers) as executor:
+        # 全てのURLを非同期タスクとして登録
+        futures = {executor.submit(scan_data_page, url): url for url in data_list}
+
+        # 完了したものから順次結果を受け取る
+        for index, future in enumerate(as_completed(futures), start=1):
+            # 進捗ログ（非同期なので表示される順番はバラバラになります）
+            if index == 1 or index % show_data_url_every == 0 or index == len(data_list):
+                print(f"[Discovery] ({index}/{len(data_list)}) Scan data page completed", flush=True)
+
+            try:
+                # 見つかったURLをセットに追加（重複は自動で弾かれます）
+                result_urls = future.result()
+                machine_urls.update(result_urls)
+            except Exception:
+                pass
 
     urls = sorted(machine_urls)
     print(f"[Discovery] Completed: machine targets={len(urls)}", flush=True)
