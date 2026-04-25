@@ -15,642 +15,225 @@ from urllib.request import Request, urlopen
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
+
 _registered_drivers = set()
 _registered_drivers_lock = threading.Lock()
 MAX_MACHINE_RETRY = 3
+_driver_pool = threading.local()
 
-
-def strip_json_comments(text):
-    result = []
-    in_string = False
-    string_quote = ''
-    escaped = False
-    i = 0
-
-    while i < len(text):
-        ch = text[i]
-        nxt = text[i + 1] if i + 1 < len(text) else ''
-
-        if in_string:
-            result.append(ch)
-            if escaped:
-                escaped = False
-            elif ch == '\\':
-                escaped = True
-            elif ch == string_quote:
-                in_string = False
-            i += 1
-            continue
-
-        if ch in ('"', "'"):
-            in_string = True
-            string_quote = ch
-            result.append(ch)
-            i += 1
-            continue
-
-        if ch == '/' and nxt == '/':
-            i += 2
-            while i < len(text) and text[i] not in ('\n', '\r'):
-                i += 1
-            continue
-
-        if ch == '/' and nxt == '*':
-            i += 2
-            while i + 1 < len(text) and not (text[i] == '*' and text[i + 1] == '/'):
-                i += 1
-            i += 2
-            continue
-
-        result.append(ch)
-        i += 1
-
-    return ''.join(result)
-
-
-def strip_trailing_commas(text):
-    result = []
-    in_string = False
-    string_quote = ''
-    escaped = False
-    i = 0
-
-    while i < len(text):
-        ch = text[i]
-
-        if in_string:
-            result.append(ch)
-            if escaped:
-                escaped = False
-            elif ch == '\\':
-                escaped = True
-            elif ch == string_quote:
-                in_string = False
-            i += 1
-            continue
-
-        if ch in ('"', "'"):
-            in_string = True
-            string_quote = ch
-            result.append(ch)
-            i += 1
-            continue
-
-        if ch == ',':
-            j = i + 1
-            while j < len(text) and text[j] in (' ', '\t', '\n', '\r'):
-                j += 1
-            if j < len(text) and text[j] in (']', '}'):
-                i += 1
-                continue
-
-        result.append(ch)
-        i += 1
-
-    return ''.join(result)
-
-
+# --- 1. Config & File Utils ---
 def load_config():
     with open(CONFIG_PATH, encoding='utf-8-sig') as f:
-        raw = f.read()
-
-    sanitized = strip_trailing_commas(strip_json_comments(raw))
-    config = json.loads(sanitized)
-
+        config = json.load(f)
     if 'save_dir' not in config:
         raise ValueError("config.json must contain 'save_dir'.")
-
-    has_targets_path = 'targets_path' in config
-    has_discovery = isinstance(config.get('discovery'), dict)
-    if not has_targets_path and not has_discovery:
+    if 'targets_path' not in config and not isinstance(config.get('discovery'), dict):
         raise ValueError("config.json must contain either 'targets_path' or 'discovery'.")
-
     return config
 
-
 def resolve_path(path_value):
-    path = Path(path_value).expanduser()
-    return path if path.is_absolute() else (BASE_DIR / path).resolve()
-
-
-def load_targets_from_json(filepath):
-    urls, _ = load_targets_with_meta(filepath)
-    return urls
-
+    p = Path(path_value).expanduser()
+    return p if p.is_absolute() else (BASE_DIR / p).resolve()
 
 def load_targets_with_meta(filepath):
     with open(filepath, encoding='utf-8-sig') as f:
         data = json.load(f)
+    urls = [str(x).strip() for x in (data if isinstance(data, list) else data.get('urls', [])) if str(x).strip()]
+    if not urls: raise ValueError("No URLs found in targets JSON.")
+    return urls, data.get('_meta', {}) if isinstance(data, dict) else {}
 
-    if isinstance(data, list):
-        urls = [str(x).strip() for x in data if str(x).strip()]
-        meta = {}
-    elif isinstance(data, dict) and isinstance(data.get('urls'), list):
-        urls = [str(x).strip() for x in data['urls'] if str(x).strip()]
-        meta = data.get('_meta', {}) if isinstance(data.get('_meta', {}), dict) else {}
-    else:
-        raise ValueError("targets JSON must be a list or an object like {'urls': [...]}.")
-
-    if not urls:
-        raise ValueError("No URLs found in targets JSON.")
-
-    return urls, meta
-
+# --- 2. Discovery Core ---
+def fetch_html(url, timeout=15):
+    with urlopen(Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=timeout) as res:
+        return res.read().decode(res.headers.get_content_charset() or 'utf-8', errors='ignore')
 
 def extract_links(html, base_url):
-    links = []
-    for href in re.findall(r'href=["\']([^"\']+)["\']', html, flags=re.IGNORECASE):
-        href = unescape(href.strip())
-        if not href or href.startswith('#'):
-            continue
-        if href.startswith('javascript:') or href.startswith('mailto:'):
-            continue
-        url = urljoin(base_url, href)
-        url = urldefrag(url)[0]
-        if url.startswith('http://') or url.startswith('https://'):
-            links.append(url)
-    return links
-
-
-def fetch_html(url, timeout=15):
-    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(request, timeout=timeout) as response:
-        charset = response.headers.get_content_charset() or 'utf-8'
-        return response.read().decode(charset, errors='ignore')
-
-
-def _query_value_set(values):
-    return {str(v).strip() for v in values if str(v).strip()}
-
-
-def is_target_data_url(url, allowed_t_values, allowed_m_values):
-    if not allowed_t_values and not allowed_m_values:
-        return True
-
-    params = parse_qs(urlparse(url).query)
-    t_value = params.get('t', [''])[0]
-    m_value = params.get('m', [''])[0]
-
-    if allowed_t_values and t_value not in allowed_t_values:
-        return False
-    if allowed_m_values and m_value not in allowed_m_values:
-        return False
-    return True
-
-
-def discover_machine_urls(discovery):
-    if discovery.get('strategy') == 'news_to_data_to_machine':
-        return discover_machine_urls_from_news(discovery)
-
-    start_urls = [str(u).strip() for u in discovery.get('start_urls', []) if str(u).strip()]
-    if not start_urls:
-        raise ValueError("discovery.start_urls must contain at least one URL.")
-
-    include_pattern = discovery.get('include_pattern', r'/machine\.php\?')
-    max_depth = int(discovery.get('max_depth', 2))
-    max_pages = int(discovery.get('max_pages', 500))
-    same_host_only = bool(discovery.get('same_host_only', True))
-
-    pattern = re.compile(include_pattern)
-    queue = deque()
-    for start_url in start_urls:
-        host = urlparse(start_url).netloc
-        queue.append((start_url, 0, host))
-
-    visited = set()
-    machine_urls = set()
-
-    while queue and len(visited) < max_pages:
-        current_url, depth, seed_host = queue.popleft()
-        if current_url in visited:
-            continue
-        visited.add(current_url)
-
-        if pattern.search(current_url):
-            machine_urls.add(current_url)
-
-        if depth >= max_depth:
-            continue
-
-        try:
-            html = fetch_html(current_url)
-            links = extract_links(html, current_url)
-        except Exception:
-            continue
-
-        for link in links:
-            parsed = urlparse(link)
-            if same_host_only and parsed.netloc != seed_host:
-                continue
-            if link not in visited:
-                queue.append((link, depth + 1, seed_host))
-
-    urls = sorted(machine_urls)
-    if not urls:
-        raise ValueError("No machine URLs discovered. Check discovery settings.")
-    return urls
-
+    return [urldefrag(urljoin(base_url, unescape(h)))[0]
+            for h in re.findall(r'href=["\']([^"\']+)["\']', html, re.I)
+            if h and not h.startswith(('#', 'javascript:', 'mailto:'))]
 
 def discover_machine_urls_from_news(discovery):
     news_urls = [str(u).strip() for u in discovery.get('news_urls', []) if str(u).strip()]
-    if not news_urls:
-        raise ValueError("discovery.news_urls must contain at least one news.php URL.")
+    if not news_urls: raise ValueError("discovery.news_urls is empty.")
 
-    data_pattern = re.compile(discovery.get('data_include_pattern', r'/data\.php\?'))
-    machine_pattern = re.compile(discovery.get('machine_include_pattern', r'/machine\.php\?'))
-    same_host_only = bool(discovery.get('same_host_only', True))
-    max_data_pages = int(discovery.get('max_data_pages', 500))
-    show_data_url_every = int(discovery.get('show_data_url_every', 10))
-    allowed_t_values = _query_value_set(discovery.get('allowed_t_values', []))
-    allowed_m_values = _query_value_set(discovery.get('allowed_m_values', []))
+    d_pat = re.compile(discovery.get('data_include_pattern', r'/data\.php\?'))
+    m_pat = re.compile(discovery.get('machine_include_pattern', r'/machine\.php\?'))
+    allow_t, allow_m = set(discovery.get('allowed_t_values', [])), set(discovery.get('allowed_m_values', []))
 
-    data_urls = set()
     print(f"[Discovery] Start: news pages={len(news_urls)}", flush=True)
-    if allowed_t_values:
-        print(f"[Discovery] Filter: t in {sorted(allowed_t_values)}", flush=True)
-    if allowed_m_values:
-        print(f"[Discovery] Filter: m in {sorted(allowed_m_values)}", flush=True)
-
-    for news_index, news_url in enumerate(news_urls, start=1):
-        print(f"[Discovery] ({news_index}/{len(news_urls)}) Fetch news: {news_url}", flush=True)
-        seed_host = urlparse(news_url).netloc
+    data_urls = set()
+    for news_url in news_urls:
         try:
-            html = fetch_html(news_url)
-            links = extract_links(html, news_url)
-        except Exception:
-            print(f"[Discovery] Skip news (fetch failed): {news_url}", flush=True)
-            continue
-
-        before = len(data_urls)
-        for link in links:
-            parsed = urlparse(link)
-            if same_host_only and parsed.netloc != seed_host:
-                continue
-            if data_pattern.search(link) and is_target_data_url(link, allowed_t_values, allowed_m_values):
-                data_urls.add(link)
-        print(f"[Discovery] data.php found in this page: +{len(data_urls) - before} (total {len(data_urls)})", flush=True)
-
-    if not data_urls:
-        raise ValueError("No data.php URLs discovered from news pages.")
-
-    machine_urls = set()
-    data_list = list(sorted(data_urls))[:max_data_pages]
-    print(f"[Discovery] data pages to scan: {len(data_list)}", flush=True)
-
-    def scan_data_page(data_url):
-        found_urls = set()
-        data_host = urlparse(data_url).netloc
-        try:
-            html = fetch_html(data_url)
-            links = extract_links(html, data_url)
+            links = extract_links(fetch_html(news_url), news_url)
             for link in links:
-                parsed = urlparse(link)
-                if same_host_only and parsed.netloc != data_host:
-                    continue
-                if machine_pattern.search(link):
-                    found_urls.add(link)
-        except Exception:
-            pass
-        return found_urls
+                if d_pat.search(link):
+                    q = parse_qs(urlparse(link).query)
+                    if (not allow_t or q.get('t', [''])[0] in allow_t) and (not allow_m or q.get('m', [''])[0] in allow_m):
+                        data_urls.add(link)
+        except Exception as e: print(f"[Discovery] Skip news {news_url}: {e}")
 
-    discovery_workers = int(discovery.get('max_workers', 10))
+    if not data_urls: raise ValueError("No data.php URLs discovered.")
 
-    with ThreadPoolExecutor(max_workers=discovery_workers) as executor:
-        # 全てのURLを非同期タスクとして登録
-        futures = {executor.submit(scan_data_page, url): url for url in data_list}
+    data_list, machine_urls = list(sorted(data_urls))[:int(discovery.get('max_data_pages', 500))], set()
+    print(f"[Discovery] Scanning {len(data_list)} data pages...", flush=True)
 
-        # 完了したものから順次結果を受け取る
-        for index, future in enumerate(as_completed(futures), start=1):
-            # 進捗ログ（非同期なので表示される順番はバラバラになります）
-            if index == 1 or index % show_data_url_every == 0 or index == len(data_list):
-                print(f"[Discovery] ({index}/{len(data_list)}) Scan data page completed", flush=True)
-
-            try:
-                # 見つかったURLをセットに追加（重複は自動で弾かれます）
-                result_urls = future.result()
-                machine_urls.update(result_urls)
-            except Exception:
-                pass
-
-    urls = sorted(machine_urls)
-    print(f"[Discovery] Completed: machine targets={len(urls)}", flush=True)
-    if not urls:
-        raise ValueError("No machine.php URLs discovered from data.php pages.")
-    return urls
-
-
-def build_discovery_signature(discovery):
-    excluded_keys = {'cache_targets_path', 'use_cached_targets_if_exists', 'show_data_url_every'}
-    normalized = {k: discovery[k] for k in sorted(discovery.keys()) if k not in excluded_keys}
-    return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
-
-
-def save_targets_json(filepath, urls, discovery=None):
-    payload = {'urls': urls}
-    if isinstance(discovery, dict):
-        payload['_meta'] = {'discovery_signature': build_discovery_signature(discovery)}
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
-def cleanup_drivers():
-    with _registered_drivers_lock:
-        drivers = list(_registered_drivers)
-        _registered_drivers.clear()
-
-    for driver in drivers:
+    def scan_page(url):
+        host = urlparse(url).netloc
         try:
-            driver.quit()
-        except Exception:
-            pass
+            return {l for l in extract_links(fetch_html(url), url) if m_pat.search(l) and urlparse(l).netloc == host}
+        except Exception: return set()
 
-    if drivers:
-        print(f"[Main] Closed Chrome drivers: {len(drivers)}", flush=True)
+    with ThreadPoolExecutor(max_workers=int(discovery.get('max_workers', 10))) as ex:
+        for fut in as_completed({ex.submit(scan_page, u): u for u in data_list}):
+            machine_urls.update(fut.result())
 
+    if not machine_urls: raise ValueError("No machine URLs discovered.")
+    print(f"[Discovery] Completed: targets={len(machine_urls)}", flush=True)
+    return sorted(machine_urls)
 
-def reset_thread_driver():
-    driver = getattr(_driver_pool, "driver", None)
-    if not driver:
-        return
-
-    with _registered_drivers_lock:
-        _registered_drivers.discard(driver)
-
-    try:
-        driver.quit()
-    except Exception:
-        pass
-
-    try:
-        delattr(_driver_pool, "driver")
-    except Exception:
-        pass
-
-_driver_pool = threading.local()
-
+# --- 3. Selenium & Scraping ---
 def get_driver():
     if not hasattr(_driver_pool, "driver"):
-        options = Options()
-        options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--log-level=3")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--remote-debugging-pipe")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--blink-settings=imagesEnabled=false")
-        options.add_argument("--disable-application-cache")
-        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-        options.add_experimental_option("useAutomationExtension", False)
-        options.add_argument("--user-agent=Mozilla/5.0")
-        _driver_pool.driver = webdriver.Chrome(options=options)
-        _driver_pool.driver.set_page_load_timeout(8)
-        with _registered_drivers_lock:
-            _registered_drivers.add(_driver_pool.driver)
-        _driver_pool.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        opts = Options()
+        for arg in ["--headless", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                    "--log-level=3", "--window-size=1920,1080", "--disable-blink-features=AutomationControlled",
+                    "--blink-settings=imagesEnabled=false", "--disable-application-cache"]:
+            opts.add_argument(arg)
+        opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+        opts.add_argument("--user-agent=Mozilla/5.0")
+        d = webdriver.Chrome(options=opts)
+        d.set_page_load_timeout(8)
+        d.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        with _registered_drivers_lock: _registered_drivers.add(d)
+        _driver_pool.driver = d
     return _driver_pool.driver
+
+def reset_thread_driver():
+    d = getattr(_driver_pool, "driver", None)
+    if d:
+        with _registered_drivers_lock: _registered_drivers.discard(d)
+        try: d.quit()
+        except: pass
+        delattr(_driver_pool, "driver")
+
+def cleanup_drivers():
+    for d in list(_registered_drivers):
+        try: d.quit()
+        except: pass
+    _registered_drivers.clear()
 
 class PachinkoScraper:
     @staticmethod
+    def prob(total, count): return f"1/{round(total / count)}" if count and total else "-"
+
+    @staticmethod
     def scrape(url):
         driver = get_driver()
-        try:
-            driver.get(url)
-        except Exception:
-            return None
+        try: driver.get(url)
+        except Exception: return None
 
-        # 1. HTMLの読み込み完了を待機
         for _ in range(30):
             try:
-                if driver.execute_script("return document.readyState") == "complete":
-                    break
-            except Exception:
-                return None
+                if driver.execute_script("return document.readyState") == "complete": break
+            except Exception: return None
             time.sleep(0.2)
 
-        # 2. JSによる動的データのレンダリング完了を待機
         for _ in range(25):
             try:
-                name_el = driver.find_element(By.CSS_SELECTOR, "div.machineName h2")
-                name_text = name_el.text.strip()
-
-                # 変更箇所: re.match (先頭からの完全一致) ではなく re.search (部分一致) にする
-                # 間に改行や余計なスペースがあってもマッチするように \s* を使用
-                match = re.search(r'(\d+)\s*番台', name_text)
-                if match:
-                    number = match.group(1)
-                    if number not in ('0', '0000'):
-                        break  # これで正しくループを抜けられるはず！
-            except Exception:
-                pass
-
+                txt = driver.find_element(By.CSS_SELECTOR, "div.machineName h2").text
+                m = re.search(r'(\d+)\s*番台', txt)
+                if m and m.group(1) not in ('0', '0000'): break
+            except Exception: pass
             time.sleep(0.2)
 
-        return PachinkoScraper.extract_data(driver)
-
-    @staticmethod
-    def extract_data(driver):
         try:
             root = driver.find_element(By.CSS_SELECTOR, ".panel")
-            name = root.find_element(By.CSS_SELECTOR, "div.machineName h2").text.strip()
-            match = re.match(r'(\d+)\s*番台(.*)', name)
-            number, title = match.groups() if match else (None, name)
-            table = root.find_element(By.CSS_SELECTOR, "section#dataSection table")
-            today = PachinkoScraper.parse_table(table)
-            today['dBB'] = PachinkoScraper.extract_bb_from_dom(root)
-            return {'machineNumber': number, 'machineName': title, 'today': today,
-                    'lastTime': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'type': 'S'}
-        except Exception:
-            print(f"[Warn] データ抽出失敗: {e}", flush=True)
-            return None
+            m = re.match(r'(\d+)\s*番台(.*)', root.find_element(By.CSS_SELECTOR, "div.machineName h2").text.strip())
+            num, title = m.groups() if m else (None, "")
 
-    @staticmethod
-    def extract_bb_from_dom(root):
-        text = root.text
-        match = re.search(r'BB[\s:：]*(\d+)', text)
-        return int(match.group(1)) if match else 0
+            labels = {'dBB': 'BB', 'dRB': 'RB', 'dART': 'AT・ART', 'dTotalStart': '累計スタート', 'dNowStart': 'スタート', 'dMY': '最大持玉'}
+            td_data = {}
+            for k, lbl in labels.items():
+                try: td_data[k] = int(root.find_element(By.XPATH, f".//td[normalize-space()='{lbl}']/following-sibling::td").text.replace(',', ''))
+                except Exception: td_data[k] = 0
 
-    @staticmethod
-    def parse_table(table):
-        labels = {'dBB': 'BB', 'dRB': 'RB', 'dART': 'AT・ART',
-                  'dTotalStart': '累計スタート', 'dNowStart': 'スタート', 'dMY': '最大持玉'}
-        data = {}
-        for key, label in labels.items():
-            try:
-                td = table.find_element(By.XPATH, f".//td[normalize-space()='{label}']/following-sibling::td")
-                data[key] = int(td.text.replace(',', '').strip())
-            except Exception:
-                data[key] = 0
-        return data
+            bb_match = re.search(r'BB[\s:：]*(\d+)', root.text)
+            td_data['dBB'] = int(bb_match.group(1)) if bb_match else 0
 
-    @staticmethod
-    def extract_bb_data(data):
-        t = data.get('today', {})
-        total = t.get('dTotalStart', 0)
-        return {
-            'n': data.get('machineNumber'), 'name': data.get('machineName'),
-            'last_update': data.get('lastTime'), 'machine_type': data.get('type'),
-            'today': {
-                'bb': t.get('dBB', 0), 'rb': t.get('dRB', 0), 'art': t.get('dART', 0),
-                'tG': total, 'cG': t.get('dNowStart', 0), 'max': t.get('dMY', 0),
-                'bbp': PachinkoScraper.prob(total, t.get('dBB', 0)),
-                'rbp': PachinkoScraper.prob(total, t.get('dRB', 0)),
-                'artp': PachinkoScraper.prob(total, t.get('dART', 0)),
-                'brp': PachinkoScraper.prob(total, sum([t.get(k, 0) for k in ['dBB','dRB','dART']]))
+            total = td_data['dTotalStart']
+            return {
+                'n': num, 'name': title,
+                'today': {
+                    'bb': td_data['dBB'], 'rb': td_data['dRB'], 'art': td_data['dART'],
+                    'tG': total, 'cG': td_data['dNowStart'], 'max': td_data['dMY'],
+                    'bbp': PachinkoScraper.prob(total, td_data['dBB']), 'rbp': PachinkoScraper.prob(total, td_data['dRB']),
+                    'artp': PachinkoScraper.prob(total, td_data['dART']), 'brp': PachinkoScraper.prob(total, sum([td_data['dBB'], td_data['dRB'], td_data['dART']]))
+                }
             }
-        }
-
-    @staticmethod
-    def prob(total, count):
-        return f"1/{round(total / count)}" if count and total else "-"
+        except Exception: return None
 
 def fetch_url(url):
-    m, n = extract_m_n_from_url(url)
+    q = parse_qs(urlparse(url).query)
+    m, n = q.get('m', [None])[0], q.get('n', [None])[0]
     for attempt in range(1, MAX_MACHINE_RETRY + 1):
-        raw = PachinkoScraper.scrape(url)
-        if raw:
-            data = PachinkoScraper.extract_bb_data(raw)
-            machine_name = (data.get('name') or '').strip()
-            machine_number = str(data.get('n') or '').strip()
-            if machine_name and machine_number not in ('', '0', '0000'):
-                return data
-
+        data = PachinkoScraper.scrape(url)
+        if data and data.get('name') and data.get('n') not in (None, '', '0', '0000'): return data
         if attempt < MAX_MACHINE_RETRY:
             reset_thread_driver()
             time.sleep(0.4 * attempt)
-
-    print(f"[Warn] スキップしました (規定回数到達): m={m}, n={n}", flush=True)
     return None
 
-def extract_m_n_from_url(url):
-    parsed = urlparse(url)
-    params = parse_qs(parsed.query)
-    return params.get('m', [None])[0], params.get('n', [None])[0]
-
-def fetch_all_parallel(urls, max_workers=4):
-    results = []
-    total = len(urls)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(fetch_url, url): url for url in urls}
-        for index, future in enumerate(as_completed(futures), start=1):
-            try:
-                result = future.result()
-                if result:
-                    results.append(result)
-                    today = result.get('today', {})
-
-                    # ログのフォーマットを整える
-                    # 機種名は全角半角が混じってズレる原因になるため、一番最後に配置する
-                    n_str = result.get('n', '-')
-                    name_str = result.get('name', '-')
-                    tg = today.get('tG', 0)
-                    bb = today.get('bb', 0)
-                    rb = today.get('rb', 0)
-                    bbp = today.get('bbp', '-')
-                    rbp = today.get('rbp', '-')
-                    brp = today.get('brp', '-')
-
-                    # 桁数を指定してキレイに揃える (> は右寄せ, < は左寄せ)
-                    print(
-                        f"[{index:>2}/{total:>2}] "
-                        f"{n_str:>4}番台 | "
-                        f"G数:{tg:>5} | "
-                        f"BB:{bb:>2} ({bbp:>5}) | "
-                        f"RB:{rb:>2} ({rbp:>5}) | "
-                        f"合算:{brp:>5} | "
-                        f"{name_str}",
-                        flush=True,
-                    )
-            except Exception as e:
-                print(f"Error: {e}")
-    return results
-
-
+# --- 4. Main ---
 def main():
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(line_buffering=True)
-
+    if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(line_buffering=True)
+    start_t = time.perf_counter()
     config = load_config()
     save_dir = resolve_path(config['save_dir'])
-    max_workers = int(config.get('max_workers', 4))
-
     os.makedirs(save_dir, exist_ok=True)
 
-    start = time.perf_counter()
-    print("[Main] Start run", flush=True)
     if isinstance(config.get('discovery'), dict):
-        print("[Main] Mode: discovery", flush=True)
-        discovery = config['discovery']
-        cache_path_value = discovery.get('cache_targets_path')
-        use_cached_targets = bool(discovery.get('use_cached_targets_if_exists', True))
-        cache_path = resolve_path(cache_path_value) if cache_path_value else None
-        current_signature = build_discovery_signature(discovery)
-
-        if use_cached_targets and cache_path and cache_path.exists():
-            cached_targets, cache_meta = load_targets_with_meta(cache_path)
-            cached_signature = str(cache_meta.get('discovery_signature', ''))
-
-            if cached_signature and cached_signature == current_signature:
-                targets = cached_targets
-                print(f"[Main] Use cached targets: {cache_path} ({len(targets)})", flush=True)
-            else:
-                reason = "cache has no signature" if not cached_signature else "discovery conditions changed"
-                print(f"[Main] Rebuild targets: {reason}", flush=True)
-                targets = discover_machine_urls(discovery)
-                save_targets_json(cache_path, targets, discovery=discovery)
-                print(f"Discovered {len(targets)} targets and saved: {cache_path}")
-        else:
-            targets = discover_machine_urls(discovery)
-            if cache_path:
-                save_targets_json(cache_path, targets, discovery=discovery)
-                print(f"Discovered {len(targets)} targets and saved: {cache_path}")
-            else:
-                print(f"Discovered {len(targets)} targets")
+        targets = discover_machine_urls_from_news(config['discovery'])
     else:
-        print("[Main] Mode: static targets_path", flush=True)
-        targets_path = resolve_path(config['targets_path'])
-        if targets_path.suffix.lower() != '.json':
-            raise ValueError("targets_path must point to a .json file")
-        targets = load_targets_from_json(targets_path)
+        targets, _ = load_targets_with_meta(resolve_path(config['targets_path']))
 
+    max_workers = int(config.get('max_workers', 4))
     print(f"[Main] Scraping start: targets={len(targets)} workers={max_workers}", flush=True)
-    all_data = fetch_all_parallel(targets, max_workers=max_workers)
+
+    all_data = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for idx, fut in enumerate(as_completed({ex.submit(fetch_url, u): u for u in targets}), 1):
+            res = fut.result()
+            if res:
+                all_data.append(res)
+                t = res['today']
+                print(f"[{idx:>2}/{len(targets):>2}] {res['n']:>4}番台 | G数:{t['tG']:>5} | BB:{t['bb']:>2} ({t['bbp']:>5}) | RB:{t['rb']:>2} ({t['rbp']:>5}) | 合算:{t['brp']:>5} | {res['name']}")
+
     cleanup_drivers()
-    print(f"\n=== Complete in {time.perf_counter() - start:.2f} sec ===")
+    print(f"\n=== Complete in {time.perf_counter() - start_t:.2f} sec ===")
 
-    if not all_data:
-        print("[Main] No data to save.", flush=True)
-        return
+    if not all_data: return
 
-    def sort_key(row):
-        n_val = row.get('n', '')
-        match = re.search(r'\d+', str(n_val))
-        return int(match.group()) if match else float('inf')
+    all_data.sort(key=lambda x: int(re.search(r'\d+', str(x.get('n', '0'))).group()) if re.search(r'\d+', str(x.get('n', ''))) else float('inf'))
 
-    all_data.sort(key=sort_key)
+    df = pd.DataFrame([{
+        'n': d['n'],
+        'machine': d['name'],
+        'tG': d['today']['tG'],
+        'cG': d['today']['cG'],
+        'bb': d['today']['bb'],
+        'bbp': d['today']['bbp'],
+        'rb': d['today']['rb'],
+        'rbp': d['today']['rbp'],
+        'art': d['today']['art'],
+        'artp': d['today']['artp'],
+        'brp': d['today']['brp'],
+        'max': d['today']['max'],
+    } for d in all_data])
 
-    rows = []
-    for data in all_data:
-        today = data['today']
-        rows.append({
-            'n': data['n'], 'name': data['name'],
-            'tG': today['tG'], 'cG': today['cG'],
-            'tG>4000': 'YES' if today['tG'] >= 4000 else 'NO',
-            'tG!=0&cG<100': 'YES' if today['tG'] and today['cG'] < 100 else 'NO',
-            'cG>400': 'YES' if today['cG'] >= 400 else 'NO',
-            'bb': today['bb'], 'bbp': today['bbp'],
-            'rb': today['rb'], 'rbp': today['rbp'],
-            'art': today['art'], 'artp': today['artp'],
-            'brp': today['brp'], 'max': today['max'],
-        })
-
-    df = pd.DataFrame(rows)
     fname = save_dir / f"pachinko_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     df.to_csv(fname, index=False, encoding='utf-8-sig')
     print(f"Saved CSV: {fname}")
