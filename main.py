@@ -450,14 +450,21 @@ def main():
     print("[Main] Start run", flush=True)
     if isinstance(config.get('discovery'), dict):
         print("[Main] Mode: discovery", flush=True)
-        targets = discover_machine_urls(config['discovery'])
-        cache_path_value = config['discovery'].get('cache_targets_path')
-        if cache_path_value:
-            cache_path = resolve_path(cache_path_value)
-            save_targets_json(cache_path, targets)
-            print(f"Discovered {len(targets)} targets and saved: {cache_path}")
+        discovery = config['discovery']
+        cache_path_value = discovery.get('cache_targets_path')
+        use_cached_targets = bool(discovery.get('use_cached_targets_if_exists', True))
+        cache_path = resolve_path(cache_path_value) if cache_path_value else None
+
+        if use_cached_targets and cache_path and cache_path.exists():
+            targets = load_targets_from_json(cache_path)
+            print(f"[Main] Use cached targets: {cache_path} ({len(targets)})", flush=True)
         else:
-            print(f"Discovered {len(targets)} targets")
+            targets = discover_machine_urls(discovery)
+            if cache_path:
+                save_targets_json(cache_path, targets)
+                print(f"Discovered {len(targets)} targets and saved: {cache_path}")
+            else:
+                print(f"Discovered {len(targets)} targets")
     else:
         print("[Main] Mode: static targets_path", flush=True)
         targets_path = resolve_path(config['targets_path'])
