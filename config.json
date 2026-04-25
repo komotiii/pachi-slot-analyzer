@@ -4,11 +4,14 @@
   "discovery": {
     "strategy": "news_to_data_to_machine",
     "news_urls": [
-      "https://reitoweb.com/b_moba/doc/news.php?h=4", //平塚
-      // "https://reitoweb.com/b_moba/doc/news.php?h=1" 荒川沖
+      "https://reitoweb.com/b_moba/doc/news.php?h=4"
     ],
     "data_include_pattern": "/data\\.php\\?",
     "machine_include_pattern": "/machine\\.php\\?",
+    "allowed_t_values": [
+      "37"
+    ],
+    "show_data_url_every": 5,
     "max_data_pages": 800,
     "same_host_only": true,
     "cache_targets_path": "./targets.discovered.json"

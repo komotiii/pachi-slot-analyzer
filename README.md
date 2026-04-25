@@ -34,6 +34,12 @@ python main.py
 1. `news.php?h=...` から `data.php`（機種一覧）を抽出
 2. `data.php` から `machine.php`（各台）を抽出
 
+探索の絞り込みは `discovery` のクエリフィルタで行います。
+
+- `allowed_t_values`: `data.php` の `t=` を許可リストで絞る
+- `allowed_m_values`: `data.php` の `m=` を許可リストで絞る
+- `show_data_url_every`: 何件ごとに「今見ている data.php URL」を表示するか
+
 例:
 
 - レイト平塚: https://reitoweb.com/b_moba/doc/news.php?h=4
@@ -53,6 +59,8 @@ python main.py
 		],
 		"data_include_pattern": "/data\\.php\\?",
 		"machine_include_pattern": "/machine\\.php\\?",
+		"allowed_t_values": ["37", "28"],
+		"show_data_url_every": 5,
 		"max_data_pages": 800,
 		"same_host_only": true,
 		"cache_targets_path": "./targets.discovered.json"

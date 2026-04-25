@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import sys
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,9 +22,102 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 
 
+def strip_json_comments(text):
+    result = []
+    in_string = False
+    string_quote = ''
+    escaped = False
+    i = 0
+
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ''
+
+        if in_string:
+            result.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == string_quote:
+                in_string = False
+            i += 1
+            continue
+
+        if ch in ('"', "'"):
+            in_string = True
+            string_quote = ch
+            result.append(ch)
+            i += 1
+            continue
+
+        if ch == '/' and nxt == '/':
+            i += 2
+            while i < len(text) and text[i] not in ('\n', '\r'):
+                i += 1
+            continue
+
+        if ch == '/' and nxt == '*':
+            i += 2
+            while i + 1 < len(text) and not (text[i] == '*' and text[i + 1] == '/'):
+                i += 1
+            i += 2
+            continue
+
+        result.append(ch)
+        i += 1
+
+    return ''.join(result)
+
+
+def strip_trailing_commas(text):
+    result = []
+    in_string = False
+    string_quote = ''
+    escaped = False
+    i = 0
+
+    while i < len(text):
+        ch = text[i]
+
+        if in_string:
+            result.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == string_quote:
+                in_string = False
+            i += 1
+            continue
+
+        if ch in ('"', "'"):
+            in_string = True
+            string_quote = ch
+            result.append(ch)
+            i += 1
+            continue
+
+        if ch == ',':
+            j = i + 1
+            while j < len(text) and text[j] in (' ', '\t', '\n', '\r'):
+                j += 1
+            if j < len(text) and text[j] in (']', '}'):
+                i += 1
+                continue
+
+        result.append(ch)
+        i += 1
+
+    return ''.join(result)
+
+
 def load_config():
     with open(CONFIG_PATH, encoding='utf-8-sig') as f:
-        config = json.load(f)
+        raw = f.read()
+
+    sanitized = strip_trailing_commas(strip_json_comments(raw))
+    config = json.loads(sanitized)
 
     if 'save_dir' not in config:
         raise ValueError("config.json must contain 'save_dir'.")
@@ -78,6 +172,25 @@ def fetch_html(url, timeout=15):
     with urlopen(request, timeout=timeout) as response:
         charset = response.headers.get_content_charset() or 'utf-8'
         return response.read().decode(charset, errors='ignore')
+
+
+def _query_value_set(values):
+    return {str(v).strip() for v in values if str(v).strip()}
+
+
+def is_target_data_url(url, allowed_t_values, allowed_m_values):
+    if not allowed_t_values and not allowed_m_values:
+        return True
+
+    params = parse_qs(urlparse(url).query)
+    t_value = params.get('t', [''])[0]
+    m_value = params.get('m', [''])[0]
+
+    if allowed_t_values and t_value not in allowed_t_values:
+        return False
+    if allowed_m_values and m_value not in allowed_m_values:
+        return False
+    return True
 
 
 def discover_machine_urls(discovery):
@@ -142,29 +255,45 @@ def discover_machine_urls_from_news(discovery):
     machine_pattern = re.compile(discovery.get('machine_include_pattern', r'/machine\.php\?'))
     same_host_only = bool(discovery.get('same_host_only', True))
     max_data_pages = int(discovery.get('max_data_pages', 500))
+    show_data_url_every = int(discovery.get('show_data_url_every', 10))
+    allowed_t_values = _query_value_set(discovery.get('allowed_t_values', []))
+    allowed_m_values = _query_value_set(discovery.get('allowed_m_values', []))
 
     data_urls = set()
+    print(f"[Discovery] Start: news pages={len(news_urls)}", flush=True)
+    if allowed_t_values:
+        print(f"[Discovery] Filter: t in {sorted(allowed_t_values)}", flush=True)
+    if allowed_m_values:
+        print(f"[Discovery] Filter: m in {sorted(allowed_m_values)}", flush=True)
 
-    for news_url in news_urls:
+    for news_index, news_url in enumerate(news_urls, start=1):
+        print(f"[Discovery] ({news_index}/{len(news_urls)}) Fetch news: {news_url}", flush=True)
         seed_host = urlparse(news_url).netloc
         try:
             html = fetch_html(news_url)
             links = extract_links(html, news_url)
         except Exception:
+            print(f"[Discovery] Skip news (fetch failed): {news_url}", flush=True)
             continue
 
+        before = len(data_urls)
         for link in links:
             parsed = urlparse(link)
             if same_host_only and parsed.netloc != seed_host:
                 continue
-            if data_pattern.search(link):
+            if data_pattern.search(link) and is_target_data_url(link, allowed_t_values, allowed_m_values):
                 data_urls.add(link)
+        print(f"[Discovery] data.php found in this page: +{len(data_urls) - before} (total {len(data_urls)})", flush=True)
 
     if not data_urls:
         raise ValueError("No data.php URLs discovered from news pages.")
 
     machine_urls = set()
-    for data_url in list(sorted(data_urls))[:max_data_pages]:
+    data_list = list(sorted(data_urls))[:max_data_pages]
+    print(f"[Discovery] data pages to scan: {len(data_list)}", flush=True)
+    for index, data_url in enumerate(data_list, start=1):
+        if index == 1 or index % show_data_url_every == 0 or index == len(data_list):
+            print(f"[Discovery] ({index}/{len(data_list)}) Scan data page: {data_url}", flush=True)
         data_host = urlparse(data_url).netloc
         try:
             html = fetch_html(data_url)
@@ -180,6 +309,7 @@ def discover_machine_urls_from_news(discovery):
                 machine_urls.add(link)
 
     urls = sorted(machine_urls)
+    print(f"[Discovery] Completed: machine targets={len(urls)}", flush=True)
     if not urls:
         raise ValueError("No machine.php URLs discovered from data.php pages.")
     return urls
@@ -307,6 +437,9 @@ def fetch_all_parallel(urls, max_workers=4):
 
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
+
     config = load_config()
     save_dir = resolve_path(config['save_dir'])
     max_workers = int(config.get('max_workers', 4))
@@ -314,7 +447,9 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
 
     start = time.perf_counter()
+    print("[Main] Start run", flush=True)
     if isinstance(config.get('discovery'), dict):
+        print("[Main] Mode: discovery", flush=True)
         targets = discover_machine_urls(config['discovery'])
         cache_path_value = config['discovery'].get('cache_targets_path')
         if cache_path_value:
@@ -324,11 +459,13 @@ def main():
         else:
             print(f"Discovered {len(targets)} targets")
     else:
+        print("[Main] Mode: static targets_path", flush=True)
         targets_path = resolve_path(config['targets_path'])
         if targets_path.suffix.lower() != '.json':
             raise ValueError("targets_path must point to a .json file")
         targets = load_targets_from_json(targets_path)
 
+    print(f"[Main] Scraping start: targets={len(targets)} workers={max_workers}", flush=True)
     all_data = fetch_all_parallel(targets, max_workers=max_workers)
     print(f"\n=== Complete in {time.perf_counter() - start:.2f} sec ===")
 
