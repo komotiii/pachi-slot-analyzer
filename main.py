@@ -20,6 +20,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
+_registered_drivers = set()
+_registered_drivers_lock = threading.Lock()
+MAX_MACHINE_RETRY = 3
 
 
 def strip_json_comments(text):
@@ -320,6 +323,40 @@ def save_targets_json(filepath, urls):
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
+
+def cleanup_drivers():
+    with _registered_drivers_lock:
+        drivers = list(_registered_drivers)
+        _registered_drivers.clear()
+
+    for driver in drivers:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+    if drivers:
+        print(f"[Main] Closed Chrome drivers: {len(drivers)}", flush=True)
+
+
+def reset_thread_driver():
+    driver = getattr(_driver_pool, "driver", None)
+    if not driver:
+        return
+
+    with _registered_drivers_lock:
+        _registered_drivers.discard(driver)
+
+    try:
+        driver.quit()
+    except Exception:
+        pass
+
+    try:
+        delattr(_driver_pool, "driver")
+    except Exception:
+        pass
+
 _driver_pool = threading.local()
 
 def get_driver():
@@ -331,11 +368,15 @@ def get_driver():
         options.add_argument("--disable-gpu")
         options.add_argument("--log-level=3")
         options.add_argument("--window-size=1920,1080")
+        options.add_argument("--remote-debugging-pipe")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         options.add_experimental_option("useAutomationExtension", False)
         options.add_argument("--user-agent=Mozilla/5.0")
         _driver_pool.driver = webdriver.Chrome(options=options)
+        _driver_pool.driver.set_page_load_timeout(8)
+        with _registered_drivers_lock:
+            _registered_drivers.add(_driver_pool.driver)
         _driver_pool.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return _driver_pool.driver
 
@@ -343,9 +384,20 @@ class PachinkoScraper:
     @staticmethod
     def scrape(url):
         driver = get_driver()
-        driver.get(url)
-        WebDriverWait(driver, 15).until(lambda d: d.execute_script("return document.readyState") == "complete")
-        time.sleep(1.5)
+        try:
+            driver.get(url)
+        except Exception:
+            return None
+
+        for _ in range(30):
+            try:
+                if driver.execute_script("return document.readyState") == "complete":
+                    break
+            except Exception:
+                return None
+            time.sleep(0.2)
+
+        time.sleep(0.3)
         return PachinkoScraper.extract_data(driver)
 
     @staticmethod
@@ -405,9 +457,23 @@ class PachinkoScraper:
 
 def fetch_url(url):
     m, n = extract_m_n_from_url(url)
-    print(f"[Thread] Getting: m={m}, n={n}")
-    raw = PachinkoScraper.scrape(url)
-    return PachinkoScraper.extract_bb_data(raw) if raw else None
+    for attempt in range(1, MAX_MACHINE_RETRY + 1):
+        print(f"[Thread] Getting: m={m}, n={n} (try {attempt}/{MAX_MACHINE_RETRY})")
+        raw = PachinkoScraper.scrape(url)
+        if raw:
+            data = PachinkoScraper.extract_bb_data(raw)
+            machine_name = (data.get('name') or '').strip()
+            machine_number = str(data.get('n') or '').strip()
+            if machine_name and machine_number not in ('', '0', '0000'):
+                return data
+
+        if attempt < MAX_MACHINE_RETRY:
+            print(f"[Thread] Retry invalid machine page: m={m}, n={n}", flush=True)
+            reset_thread_driver()
+            time.sleep(0.4 * attempt)
+
+    print(f"[Thread] Skip invalid machine page after retries: m={m}, n={n}", flush=True)
+    return None
 
 def extract_m_n_from_url(url):
     parsed = urlparse(url)
@@ -474,7 +540,12 @@ def main():
 
     print(f"[Main] Scraping start: targets={len(targets)} workers={max_workers}", flush=True)
     all_data = fetch_all_parallel(targets, max_workers=max_workers)
+    cleanup_drivers()
     print(f"\n=== Complete in {time.perf_counter() - start:.2f} sec ===")
+
+    if not all_data:
+        print("[Main] No data to save.", flush=True)
+        return
 
     rows = []
     for data in all_data:

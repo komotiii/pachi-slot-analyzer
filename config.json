@@ -1,6 +1,6 @@
 {
   "save_dir": "./data",
-  "max_workers": 4,
+  "max_workers": 2,
   "discovery": {
     "strategy": "news_to_data_to_machine",
     "news_urls": [
@@ -8,9 +8,8 @@
     ],
     "data_include_pattern": "/data\\.php\\?",
     "machine_include_pattern": "/machine\\.php\\?",
-    "allowed_t_values": [
-      "37"
-    ],
+    "allowed_t_values": ["37"],
+    "allowed_m_values": ["99120010"],
     "show_data_url_every": 5,
     "max_data_pages": 800,
     "same_host_only": true,
