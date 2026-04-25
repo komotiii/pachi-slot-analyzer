@@ -1,10 +1,12 @@
 import os
 import re
+import json
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -12,13 +14,40 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-save_dir = r"C:\Users\yakim\OneDrive - 筑波大学\Unification\Slot\data"
-list_path = r"C:\Users\yakim\OneDrive - 筑波大学\Unification\Slot\list.txt"
-os.makedirs(save_dir, exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config.json"
 
-def load_targets_from_file(filepath):
-    with open(filepath, encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip()]
+
+def load_config():
+    with open(CONFIG_PATH, encoding='utf-8-sig') as f:
+        config = json.load(f)
+
+    if 'save_dir' not in config or 'targets_path' not in config:
+        raise ValueError("config.json must contain 'save_dir' and 'targets_path'.")
+
+    return config
+
+
+def resolve_path(path_value):
+    path = Path(path_value).expanduser()
+    return path if path.is_absolute() else (BASE_DIR / path).resolve()
+
+
+def load_targets_from_json(filepath):
+    with open(filepath, encoding='utf-8-sig') as f:
+        data = json.load(f)
+
+    if isinstance(data, list):
+        urls = [str(x).strip() for x in data if str(x).strip()]
+    elif isinstance(data, dict) and isinstance(data.get('urls'), list):
+        urls = [str(x).strip() for x in data['urls'] if str(x).strip()]
+    else:
+        raise ValueError("targets JSON must be a list or an object like {'urls': [...]}.")
+
+    if not urls:
+        raise ValueError("No URLs found in targets JSON.")
+
+    return urls
 
 _driver_pool = threading.local()
 
@@ -29,9 +58,10 @@ def get_driver():
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
+        options.add_argument("--log-level=3")
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         options.add_experimental_option("useAutomationExtension", False)
         options.add_argument("--user-agent=Mozilla/5.0")
         _driver_pool.driver = webdriver.Chrome(options=options)
@@ -59,7 +89,7 @@ class PachinkoScraper:
             today['dBB'] = PachinkoScraper.extract_bb_from_dom(root)
             return {'machineNumber': number, 'machineName': title, 'today': today,
                     'lastTime': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'type': 'S'}
-        except:
+        except Exception:
             return None
 
     @staticmethod
@@ -77,7 +107,7 @@ class PachinkoScraper:
             try:
                 td = table.find_element(By.XPATH, f".//td[normalize-space()='{label}']/following-sibling::td")
                 data[key] = int(td.text.replace(',', '').strip())
-            except:
+            except Exception:
                 data[key] = 0
         return data
 
@@ -115,22 +145,40 @@ def extract_m_n_from_url(url):
 
 def fetch_all_parallel(urls, max_workers=4):
     results = []
+    total = len(urls)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(fetch_url, url): url for url in urls}
-        for future in as_completed(futures):
+        for index, future in enumerate(as_completed(futures), start=1):
             try:
                 result = future.result()
                 if result:
                     results.append(result)
+                    today = result.get('today', {})
+                    print(
+                        f"[{index}/{total}] {result.get('n', '-') }番台 {result.get('name', '-') } | "
+                        f"tG={today.get('tG', 0)} bb={today.get('bb', 0)} rb={today.get('rb', 0)} "
+                        f"bbp={today.get('bbp', '-')} rbp={today.get('rbp', '-')} artp={today.get('artp', '-')}",
+                        flush=True,
+                    )
             except Exception as e:
                 print(f"Error: {e}")
     return results
 
 
 def main():
+    config = load_config()
+    save_dir = resolve_path(config['save_dir'])
+    targets_path = resolve_path(config['targets_path'])
+    max_workers = int(config.get('max_workers', 4))
+
+    if targets_path.suffix.lower() != '.json':
+        raise ValueError("targets_path must point to a .json file")
+
+    os.makedirs(save_dir, exist_ok=True)
+
     start = time.perf_counter()
-    targets = load_targets_from_file(list_path)
-    all_data = fetch_all_parallel(targets, max_workers=4)
+    targets = load_targets_from_json(targets_path)
+    all_data = fetch_all_parallel(targets, max_workers=max_workers)
     print(f"\n=== Complete in {time.perf_counter() - start:.2f} sec ===")
 
     rows = []
@@ -149,7 +197,7 @@ def main():
         })
 
     df = pd.DataFrame(rows)
-    fname = os.path.join(save_dir, f"pachinko_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    fname = save_dir / f"pachinko_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     df.to_csv(fname, index=False, encoding='utf-8-sig')
     print(f"Saved CSV: {fname}")
 

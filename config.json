@@ -1,0 +1,5 @@
+{
+  "save_dir": "./data",
+  "targets_path": "./targets.json",
+  "max_workers": 4
+}
