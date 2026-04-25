@@ -494,7 +494,6 @@ class PachinkoScraper:
 def fetch_url(url):
     m, n = extract_m_n_from_url(url)
     for attempt in range(1, MAX_MACHINE_RETRY + 1):
-        print(f"[Thread] Getting: m={m}, n={n} (try {attempt}/{MAX_MACHINE_RETRY})")
         raw = PachinkoScraper.scrape(url)
         if raw:
             data = PachinkoScraper.extract_bb_data(raw)
@@ -504,11 +503,10 @@ def fetch_url(url):
                 return data
 
         if attempt < MAX_MACHINE_RETRY:
-            print(f"[Thread] Retry invalid machine page: m={m}, n={n}", flush=True)
             reset_thread_driver()
             time.sleep(0.4 * attempt)
 
-    print(f"[Thread] Skip invalid machine page after retries: m={m}, n={n}", flush=True)
+    print(f"[Warn] スキップしました (規定回数到達): m={m}, n={n}", flush=True)
     return None
 
 def extract_m_n_from_url(url):
@@ -527,10 +525,27 @@ def fetch_all_parallel(urls, max_workers=4):
                 if result:
                     results.append(result)
                     today = result.get('today', {})
+
+                    # ログのフォーマットを整える
+                    # 機種名は全角半角が混じってズレる原因になるため、一番最後に配置する
+                    n_str = result.get('n', '-')
+                    name_str = result.get('name', '-')
+                    tg = today.get('tG', 0)
+                    bb = today.get('bb', 0)
+                    rb = today.get('rb', 0)
+                    bbp = today.get('bbp', '-')
+                    rbp = today.get('rbp', '-')
+                    brp = today.get('brp', '-')
+
+                    # 桁数を指定してキレイに揃える (> は右寄せ, < は左寄せ)
                     print(
-                        f"[{index}/{total}] {result.get('n', '-') }番台 {result.get('name', '-') } | "
-                        f"tG={today.get('tG', 0)} bb={today.get('bb', 0)} rb={today.get('rb', 0)} "
-                        f"bbp={today.get('bbp', '-')} rbp={today.get('rbp', '-')} artp={today.get('artp', '-')}",
+                        f"[{index:>2}/{total:>2}] "
+                        f"{n_str:>4}番台 | "
+                        f"G数:{tg:>5} | "
+                        f"BB:{bb:>2} ({bbp:>5}) | "
+                        f"RB:{rb:>2} ({rbp:>5}) | "
+                        f"合算:{brp:>5} | "
+                        f"{name_str}",
                         flush=True,
                     )
             except Exception as e:
