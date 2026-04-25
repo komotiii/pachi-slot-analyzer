@@ -385,6 +385,8 @@ def get_driver():
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--remote-debugging-pipe")
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--disable-application-cache")
         options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         options.add_experimental_option("useAutomationExtension", False)
         options.add_argument("--user-agent=Mozilla/5.0")
@@ -413,23 +415,20 @@ class PachinkoScraper:
                 return None
             time.sleep(0.2)
 
-        # 2. 【変更箇所】JSによる動的データのレンダリング完了を待機
-        # 最大5秒間（0.2秒 × 25回）、0番台以外の表示になるか監視する
+        # 2. JSによる動的データのレンダリング完了を待機
         for _ in range(25):
             try:
-                # すでにDOMに要素が追加され、テキストが取得できるかチェック
                 name_el = driver.find_element(By.CSS_SELECTOR, "div.machineName h2")
                 name_text = name_el.text.strip()
 
-                # 「〇〇番台」の数値を抽出
-                match = re.match(r'(\d+)\s*番台', name_text)
+                # 変更箇所: re.match (先頭からの完全一致) ではなく re.search (部分一致) にする
+                # 間に改行や余計なスペースがあってもマッチするように \s* を使用
+                match = re.search(r'(\d+)\s*番台', name_text)
                 if match:
                     number = match.group(1)
-                    # 番台が '0' や '0000' 以外であれば、データ読み込み完了とみなしてループを抜ける
                     if number not in ('0', '0000'):
-                        break
+                        break  # これで正しくループを抜けられるはず！
             except Exception:
-                # まだ要素が存在しない（NoSuchElementExceptionなど）場合は無視して待機を続ける
                 pass
 
             time.sleep(0.2)
@@ -449,6 +448,7 @@ class PachinkoScraper:
             return {'machineNumber': number, 'machineName': title, 'today': today,
                     'lastTime': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'type': 'S'}
         except Exception:
+            print(f"[Warn] データ抽出失敗: {e}", flush=True)
             return None
 
     @staticmethod
@@ -608,6 +608,13 @@ def main():
     if not all_data:
         print("[Main] No data to save.", flush=True)
         return
+
+    def sort_key(row):
+        n_val = row.get('n', '')
+        match = re.search(r'\d+', str(n_val))
+        return int(match.group()) if match else float('inf')
+
+    all_data.sort(key=sort_key)
 
     rows = []
     for data in all_data:
