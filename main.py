@@ -13,68 +13,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 save_dir = r"C:\Users\yakim\OneDrive - 筑波大学\Unification\Slot\data"
+list_path = r"C:\Users\yakim\OneDrive - 筑波大学\Unification\Slot\list.txt"
 os.makedirs(save_dir, exist_ok=True)
 
-targets = [
-    #20Slot
-
-    #5.5Slot
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120226&n=1120",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120231&n=1121",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120252&n=1122",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120194&n=1123",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120155&n=1125",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120292&n=1126",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120142&n=1127",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120203&n=1128",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120191&n=1130",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120216&n=1131",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120145&n=1132",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120155&n=1133",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120122&n=1135",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120180&n=1136",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120217&n=1137",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120268&n=1138",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120187&n=1150",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120155&n=1151",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120216&n=1152",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120103&n=1153",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120256&n=1155",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120191&n=1156",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120244&n=1157",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120182&n=1158",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120230&n=1160",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120279&n=1161",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120253&n=1162",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120130&n=1163",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120271&n=1165",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120258&n=1166",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120238&n=1167",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120217&n=1168",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120181&n=1170",
-    #2.2Slot
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1066",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1067",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1068",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1070",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1071",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1072",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120093&n=1073",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120117&n=1075",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120248&n=1076",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1077",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120034&n=1078",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120123&n=1080",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120168&n=1081",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120137&n=1082",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1083",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120071&n=1085",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120089&n=1086",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1087",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1088",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120077&n=1100",
-    "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120216&n=1131",
-]
+def load_targets_from_file(filepath):
+    with open(filepath, encoding='utf-8') as f:
+        return [line.strip() for line in f if line.strip()]
 
 _driver_pool = threading.local()
 
@@ -185,6 +129,7 @@ def fetch_all_parallel(urls, max_workers=4):
 
 def main():
     start = time.perf_counter()
+    targets = load_targets_from_file(list_path)
     all_data = fetch_all_parallel(targets, max_workers=4)
     print(f"\n=== Complete in {time.perf_counter() - start:.2f} sec ===")
 
