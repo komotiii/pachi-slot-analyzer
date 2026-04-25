@@ -1,1 +1,1 @@
-"# pachi-slot-analyzer" 
+# pachi-slot-analyzer
