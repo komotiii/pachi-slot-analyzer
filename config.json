@@ -1,5 +1,16 @@
 {
   "save_dir": "./data",
-  "targets_path": "./targets.json",
-  "max_workers": 4
+  "max_workers": 4,
+  "discovery": {
+    "strategy": "news_to_data_to_machine",
+    "news_urls": [
+      "https://reitoweb.com/b_moba/doc/news.php?h=4", //平塚
+      // "https://reitoweb.com/b_moba/doc/news.php?h=1" 荒川沖
+    ],
+    "data_include_pattern": "/data\\.php\\?",
+    "machine_include_pattern": "/machine\\.php\\?",
+    "max_data_pages": 800,
+    "same_host_only": true,
+    "cache_targets_path": "./targets.discovered.json"
+  }
 }
