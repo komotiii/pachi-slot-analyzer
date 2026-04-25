@@ -139,20 +139,27 @@ def resolve_path(path_value):
 
 
 def load_targets_from_json(filepath):
+    urls, _ = load_targets_with_meta(filepath)
+    return urls
+
+
+def load_targets_with_meta(filepath):
     with open(filepath, encoding='utf-8-sig') as f:
         data = json.load(f)
 
     if isinstance(data, list):
         urls = [str(x).strip() for x in data if str(x).strip()]
+        meta = {}
     elif isinstance(data, dict) and isinstance(data.get('urls'), list):
         urls = [str(x).strip() for x in data['urls'] if str(x).strip()]
+        meta = data.get('_meta', {}) if isinstance(data.get('_meta', {}), dict) else {}
     else:
         raise ValueError("targets JSON must be a list or an object like {'urls': [...]}.")
 
     if not urls:
         raise ValueError("No URLs found in targets JSON.")
 
-    return urls
+    return urls, meta
 
 
 def extract_links(html, base_url):
@@ -318,8 +325,16 @@ def discover_machine_urls_from_news(discovery):
     return urls
 
 
-def save_targets_json(filepath, urls):
+def build_discovery_signature(discovery):
+    excluded_keys = {'cache_targets_path', 'use_cached_targets_if_exists', 'show_data_url_every'}
+    normalized = {k: discovery[k] for k in sorted(discovery.keys()) if k not in excluded_keys}
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+
+
+def save_targets_json(filepath, urls, discovery=None):
     payload = {'urls': urls}
+    if isinstance(discovery, dict):
+        payload['_meta'] = {'discovery_signature': build_discovery_signature(discovery)}
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -397,7 +412,7 @@ class PachinkoScraper:
                 return None
             time.sleep(0.2)
 
-        time.sleep(0.3)
+        time.sleep(3.0)
         return PachinkoScraper.extract_data(driver)
 
     @staticmethod
@@ -520,14 +535,25 @@ def main():
         cache_path_value = discovery.get('cache_targets_path')
         use_cached_targets = bool(discovery.get('use_cached_targets_if_exists', True))
         cache_path = resolve_path(cache_path_value) if cache_path_value else None
+        current_signature = build_discovery_signature(discovery)
 
         if use_cached_targets and cache_path and cache_path.exists():
-            targets = load_targets_from_json(cache_path)
-            print(f"[Main] Use cached targets: {cache_path} ({len(targets)})", flush=True)
+            cached_targets, cache_meta = load_targets_with_meta(cache_path)
+            cached_signature = str(cache_meta.get('discovery_signature', ''))
+
+            if cached_signature and cached_signature == current_signature:
+                targets = cached_targets
+                print(f"[Main] Use cached targets: {cache_path} ({len(targets)})", flush=True)
+            else:
+                reason = "cache has no signature" if not cached_signature else "discovery conditions changed"
+                print(f"[Main] Rebuild targets: {reason}", flush=True)
+                targets = discover_machine_urls(discovery)
+                save_targets_json(cache_path, targets, discovery=discovery)
+                print(f"Discovered {len(targets)} targets and saved: {cache_path}")
         else:
             targets = discover_machine_urls(discovery)
             if cache_path:
-                save_targets_json(cache_path, targets)
+                save_targets_json(cache_path, targets, discovery=discovery)
                 print(f"Discovered {len(targets)} targets and saved: {cache_path}")
             else:
                 print(f"Discovered {len(targets)} targets")
