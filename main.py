@@ -4,7 +4,6 @@ import json
 import time
 import sys
 import threading
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 from datetime import datetime
@@ -25,26 +24,19 @@ _registered_drivers_lock = threading.Lock()
 MAX_MACHINE_RETRY = 3
 _driver_pool = threading.local()
 
-# --- 1. Config & File Utils ---
+# --- 1. Config ---
 def load_config():
     with open(CONFIG_PATH, encoding='utf-8-sig') as f:
         config = json.load(f)
     if 'save_dir' not in config:
         raise ValueError("config.json must contain 'save_dir'.")
-    if 'targets_path' not in config and not isinstance(config.get('discovery'), dict):
-        raise ValueError("config.json must contain either 'targets_path' or 'discovery'.")
+    if not isinstance(config.get('discovery'), dict):
+        raise ValueError("config.json must contain 'discovery'.")
     return config
 
 def resolve_path(path_value):
     p = Path(path_value).expanduser()
     return p if p.is_absolute() else (BASE_DIR / p).resolve()
-
-def load_targets_with_meta(filepath):
-    with open(filepath, encoding='utf-8-sig') as f:
-        data = json.load(f)
-    urls = [str(x).strip() for x in (data if isinstance(data, list) else data.get('urls', [])) if str(x).strip()]
-    if not urls: raise ValueError("No URLs found in targets JSON.")
-    return urls, data.get('_meta', {}) if isinstance(data, dict) else {}
 
 # --- 2. Discovery Core ---
 def fetch_html(url, timeout=15):
@@ -57,12 +49,21 @@ def extract_links(html, base_url):
             if h and not h.startswith(('#', 'javascript:', 'mailto:'))]
 
 def discover_machine_urls_from_news(discovery):
-    news_urls = [str(u).strip() for u in discovery.get('news_urls', []) if str(u).strip()]
-    if not news_urls: raise ValueError("discovery.news_urls is empty.")
+    base_news_urls = [str(u).strip() for u in discovery.get('news_urls', []) if str(u).strip()]
+    if not base_news_urls: raise ValueError("discovery.news_urls is empty.")
 
     d_pat = re.compile(discovery.get('data_include_pattern', r'/data\.php\?'))
     m_pat = re.compile(discovery.get('machine_include_pattern', r'/machine\.php\?'))
+
     allow_t, allow_m = set(discovery.get('allowed_t_values', [])), set(discovery.get('allowed_m_values', []))
+    allow_h = set(discovery.get('allowed_h_values', []))
+
+    news_urls = []
+    for u in base_news_urls:
+        if allow_h and 'h=' not in urlparse(u).query:
+            news_urls.extend([f"{u}{'&' if '?' in u else '?'}h={h}" for h in allow_h])
+        else:
+            news_urls.append(u)
 
     print(f"[Discovery] Start: news pages={len(news_urls)}", flush=True)
     data_urls = set()
@@ -72,7 +73,9 @@ def discover_machine_urls_from_news(discovery):
             for link in links:
                 if d_pat.search(link):
                     q = parse_qs(urlparse(link).query)
-                    if (not allow_t or q.get('t', [''])[0] in allow_t) and (not allow_m or q.get('m', [''])[0] in allow_m):
+                    if (not allow_t or q.get('t', [''])[0] in allow_t) and \
+                       (not allow_m or q.get('m', [''])[0] in allow_m) and \
+                       (not allow_h or q.get('h', [''])[0] in allow_h):
                         data_urls.add(link)
         except Exception as e: print(f"[Discovery] Skip news {news_url}: {e}")
 
@@ -178,10 +181,14 @@ class PachinkoScraper:
 
 def fetch_url(url):
     q = parse_qs(urlparse(url).query)
-    m, n = q.get('m', [None])[0], q.get('n', [None])[0]
+    h_val = q.get('h', [''])[0]
+
     for attempt in range(1, MAX_MACHINE_RETRY + 1):
         data = PachinkoScraper.scrape(url)
-        if data and data.get('name') and data.get('n') not in (None, '', '0', '0000'): return data
+        if data and data.get('name') and data.get('n') not in (None, '', '0', '0000'):
+            data['h'] = h_val
+            return data
+
         if attempt < MAX_MACHINE_RETRY:
             reset_thread_driver()
             time.sleep(0.4 * attempt)
@@ -195,10 +202,7 @@ def main():
     save_dir = resolve_path(config['save_dir'])
     os.makedirs(save_dir, exist_ok=True)
 
-    if isinstance(config.get('discovery'), dict):
-        targets = discover_machine_urls_from_news(config['discovery'])
-    else:
-        targets, _ = load_targets_with_meta(resolve_path(config['targets_path']))
+    targets = discover_machine_urls_from_news(config['discovery'])
 
     max_workers = int(config.get('max_workers', 4))
     print(f"[Main] Scraping start: targets={len(targets)} workers={max_workers}", flush=True)
@@ -210,7 +214,8 @@ def main():
             if res:
                 all_data.append(res)
                 t = res['today']
-                print(f"[{idx:>2}/{len(targets):>2}] {res['n']:>4}番台 | G数:{t['tG']:>5} | BB:{t['bb']:>2} ({t['bbp']:>5}) | RB:{t['rb']:>2} ({t['rbp']:>5}) | 合算:{t['brp']:>5} | {res['name']}")
+                h_str = res.get('h', '-')
+                print(f"[{idx:>2}/{len(targets):>2}] [h={h_str:>2}] {res['n']:>4}番台 | G数:{t['tG']:>5} | BB:{t['bb']:>2} ({t['bbp']:>5}) | RB:{t['rb']:>2} ({t['rbp']:>5}) | 合算:{t['brp']:>5} | {res['name']}")
 
     cleanup_drivers()
     print(f"\n=== Complete in {time.perf_counter() - start_t:.2f} sec ===")
@@ -220,6 +225,7 @@ def main():
     all_data.sort(key=lambda x: int(re.search(r'\d+', str(x.get('n', '0'))).group()) if re.search(r'\d+', str(x.get('n', ''))) else float('inf'))
 
     df = pd.DataFrame([{
+        'h': d.get('h', ''),
         'n': d['n'],
         'machine': d['name'],
         'tG': d['today']['tG'],

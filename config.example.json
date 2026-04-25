@@ -1,19 +1,18 @@
 {
   "save_dir": "./data",
-  "max_workers": 2,
+  "max_workers": 4,
   "discovery": {
     "strategy": "news_to_data_to_machine",
     "news_urls": [
-      "https://reitoweb.com/b_moba/doc/news.php?h=4"
+      "https://reitoweb.com/b_moba/doc/news.php"
     ],
     "data_include_pattern": "/data\\.php\\?",
     "machine_include_pattern": "/machine\\.php\\?",
-    "allowed_t_values": ["37","31","28"],
+    "allowed_h_values": ["4", "11"],
+    "allowed_t_values": ["37", "31", "28"],
     "allowed_m_values": [],
-    "show_data_url_every": 5,
+    "show_data_url_every": 10,
     "max_data_pages": 800,
-    "same_host_only": true,
-    "use_cached_targets_if_exists": true,
-    "cache_targets_path": "./targets.discovered.json"
+    "same_host_only": true
   }
 }
