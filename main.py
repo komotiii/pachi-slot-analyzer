@@ -40,7 +40,7 @@ class PachinkoDataScraper:
     def scrape(self, url):
         self.driver.get(url)
         WebDriverWait(self.driver, 15).until(lambda d: d.execute_script("return document.readyState") == "complete")
-        time.sleep(2)
+        time.sleep(1.5)
         return self.extract_data()
 
     def extract_data(self):
@@ -179,18 +179,18 @@ def extract_m_n_from_url(url):
     except Exception:
         return None, None
 
-def fetch_worker(urls):
+def fetch_all(urls):
     results = []
-    for url in urls:
-        start = time.perf_counter()
-        m, n = extract_m_n_from_url(url)
-        if not m or not n:
-            print(f"⚠️ URLからmまたはnを取得できませんでした: {url}")
-            continue
-        print(f"開始: m={m}, n={n} のデータ取得中...")
+    with PachinkoDataScraper(headless=True) as scraper:
+        for url in urls:
+            start = time.perf_counter()
+            m, n = extract_m_n_from_url(url)
+            if not m or not n:
+                print(f"⚠️ URLからmまたはnを取得できませんでした: {url}")
+                continue
+            print(f"開始: m={m}, n={n} のデータ取得中...")
 
-        try:
-            with PachinkoDataScraper(headless=True) as scraper:
+            try:
                 raw = scraper.scrape(url)
                 if raw:
                     bb = scraper.extract_bb_data(raw)
@@ -200,9 +200,9 @@ def fetch_worker(urls):
                 else:
                     elapsed = time.perf_counter() - start
                     print(f"❌ {n} データ取得失敗 （所要時間: {elapsed:.2f}秒）")
-        except Exception as e:
-            elapsed = time.perf_counter() - start
-            print(f"❌ {n} 例外発生: {e} （所要時間: {elapsed:.2f}秒）")
+            except Exception as e:
+                elapsed = time.perf_counter() - start
+                print(f"❌ {n} 例外発生: {e} （所要時間: {elapsed:.2f}秒）")
     return results
 
 def main():
@@ -210,50 +210,54 @@ def main():
         "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1066",
         "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1067",
         "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1068",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1070",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1071",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1072",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120093&n=1073",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120117&n=1075",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120248&n=1076",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1077",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120034&n=1078",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120123&n=1080",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120168&n=1081",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120137&n=1082",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1083",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120071&n=1085",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120089&n=1086",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1087",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1088",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120077&n=1100",
-        "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120216&n=1131",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1070",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1071",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1072",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120093&n=1073",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120117&n=1075",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120248&n=1076",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1077",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120034&n=1078",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120123&n=1080",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120168&n=1081",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120137&n=1082",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1083",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120071&n=1085",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120089&n=1086",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120126&n=1087",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120073&n=1088",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120077&n=1100",
+        #"https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120216&n=1131",
     ]
 
+
     overall_start = time.perf_counter()
-
-    # URLリストを分割（例: 2分割）
-    half = len(targets) // 2
-    chunk1 = targets[:half]
-    chunk2 = targets[half:]
-
-    all_data = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future1 = executor.submit(fetch_worker, chunk1)
-        future2 = executor.submit(fetch_worker, chunk2)
-        data1 = future1.result()
-        data2 = future2.result()
-        all_data.extend(data1)
-        all_data.extend(data2)
-
+    all_data = fetch_all(targets)
     overall_elapsed = time.perf_counter() - overall_start
     print(f"\n=== 全処理完了 所要時間: {overall_elapsed:.2f}秒 ===\n")
 
     if all_data:
-        # CSV保存処理は変更なし
-        pass
+        rows = []
+        for data in all_data:
+            today = data.get('today', {})
+            row = {
+                'machine_number': data['machine_number'], 'machine_name': data['machine_name'],
+                'machine_type': data['machine_type'], 'period': '今日', 'last_update': data['last_update'],
+                **today
+            }
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        cols = ['machine_number', 'machine_name', 'machine_type', 'period', 'last_update',
+                'bb_count', 'rb_count', 'art_count', 'total_start', 'current_start', 'max_balls',
+                'bb_probability', 'rb_probability', 'art_probability', 'combined_probability']
+        df = df.reindex(columns=cols, fill_value=None)
+        fname = f"pachinko_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        df.to_csv(fname, index=False, encoding='utf-8-sig')
+        print(f"✅ 全台分のCSV保存成功: {fname}")
     else:
-        print("❌ 取得データがありませんでした")
+        print("❌ データが取得できませんでした")
+
 
 if __name__ == "__main__":
     main()
