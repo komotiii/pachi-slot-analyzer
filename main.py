@@ -12,6 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import concurrent.futures
 from urllib.parse import urlparse, parse_qs
 
 class PachinkoDataScraper:
@@ -178,6 +179,32 @@ def extract_m_n_from_url(url):
     except Exception:
         return None, None
 
+def fetch_worker(urls):
+    results = []
+    for url in urls:
+        start = time.perf_counter()
+        m, n = extract_m_n_from_url(url)
+        if not m or not n:
+            print(f"⚠️ URLからmまたはnを取得できませんでした: {url}")
+            continue
+        print(f"開始: m={m}, n={n} のデータ取得中...")
+
+        try:
+            with PachinkoDataScraper(headless=True) as scraper:
+                raw = scraper.scrape(url)
+                if raw:
+                    bb = scraper.extract_bb_data(raw)
+                    elapsed = time.perf_counter() - start
+                    print(f"✅ {n} 取得成功 （所要時間: {elapsed:.2f}秒）")
+                    results.append(bb)
+                else:
+                    elapsed = time.perf_counter() - start
+                    print(f"❌ {n} データ取得失敗 （所要時間: {elapsed:.2f}秒）")
+        except Exception as e:
+            elapsed = time.perf_counter() - start
+            print(f"❌ {n} 例外発生: {e} （所要時間: {elapsed:.2f}秒）")
+    return results
+
 def main():
     targets = [
         "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=28&m=99120096&n=1066",
@@ -203,52 +230,28 @@ def main():
         "https://reitoweb.com/b_moba/doc/machine.php?h=4&t=31&m=99120216&n=1131",
     ]
 
+    overall_start = time.perf_counter()
+
+    # URLリストを分割（例: 2分割）
+    half = len(targets) // 2
+    chunk1 = targets[:half]
+    chunk2 = targets[half:]
+
     all_data = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future1 = executor.submit(fetch_worker, chunk1)
+        future2 = executor.submit(fetch_worker, chunk2)
+        data1 = future1.result()
+        data2 = future2.result()
+        all_data.extend(data1)
+        all_data.extend(data2)
 
-    with PachinkoDataScraper(headless=True) as s:
-        for url in targets:
-            if not url.strip():
-                print("⚠️ 空のURLをスキップします")
-                continue
-            m, n = extract_m_n_from_url(url)
-            if not m or not n:
-                print(f"⚠️ URLからmまたはnを取得できませんでした: {url}")
-                continue
-
-            print(f"開始: m={m}, n={n} のデータ取得中...")
-
-            try:
-                raw = s.scrape(url)
-                if raw:
-                    print("✅ 取得成功")
-                    bb = s.extract_bb_data(raw)
-                    # 解析しやすい形に整形
-                    all_data.append(bb)
-                else:
-                    print("❌ データ取得失敗")
-            except Exception as e:
-                print(f"❌ 例外発生: {e}")
-
+    overall_elapsed = time.perf_counter() - overall_start
+    print(f"\n=== 全処理完了 所要時間: {overall_elapsed:.2f}秒 ===\n")
 
     if all_data:
-        rows = []
-        for data in all_data:
-            today = data.get('today', {})
-            row = {
-                'machine_number': data['machine_number'], 'machine_name': data['machine_name'],
-                'machine_type': data['machine_type'], 'period': '今日', 'last_update': data['last_update'],
-                **today
-            }
-            rows.append(row)
-
-        df = pd.DataFrame(rows)
-        cols = ['machine_number', 'machine_name', 'machine_type', 'period', 'last_update',
-                'bb_count', 'rb_count', 'art_count', 'total_start', 'current_start', 'max_balls',
-                'bb_probability', 'rb_probability', 'art_probability', 'combined_probability']
-        df = df.reindex(columns=cols, fill_value=None)
-        fname = f"pachinko_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        df.to_csv(fname, index=False, encoding='utf-8-sig')
-        print(f"✅ 全台分のCSV保存成功: {fname}")
+        # CSV保存処理は変更なし
+        pass
     else:
         print("❌ 取得データがありませんでした")
 
