@@ -404,6 +404,7 @@ class PachinkoScraper:
         except Exception:
             return None
 
+        # 1. HTMLの読み込み完了を待機
         for _ in range(30):
             try:
                 if driver.execute_script("return document.readyState") == "complete":
@@ -412,7 +413,27 @@ class PachinkoScraper:
                 return None
             time.sleep(0.2)
 
-        time.sleep(3.0)
+        # 2. 【変更箇所】JSによる動的データのレンダリング完了を待機
+        # 最大5秒間（0.2秒 × 25回）、0番台以外の表示になるか監視する
+        for _ in range(25):
+            try:
+                # すでにDOMに要素が追加され、テキストが取得できるかチェック
+                name_el = driver.find_element(By.CSS_SELECTOR, "div.machineName h2")
+                name_text = name_el.text.strip()
+
+                # 「〇〇番台」の数値を抽出
+                match = re.match(r'(\d+)\s*番台', name_text)
+                if match:
+                    number = match.group(1)
+                    # 番台が '0' や '0000' 以外であれば、データ読み込み完了とみなしてループを抜ける
+                    if number not in ('0', '0000'):
+                        break
+            except Exception:
+                # まだ要素が存在しない（NoSuchElementExceptionなど）場合は無視して待機を続ける
+                pass
+
+            time.sleep(0.2)
+
         return PachinkoScraper.extract_data(driver)
 
     @staticmethod
